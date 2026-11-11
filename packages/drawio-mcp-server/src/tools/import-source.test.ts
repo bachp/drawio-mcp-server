@@ -1,11 +1,15 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { deflateRawSync, deflateSync } from "node:zlib";
 
-import { describe, expect, it } from "@jest/globals";
+import { afterAll, beforeAll, describe, expect, it } from "@jest/globals";
 
 import {
   decompressDiagramXml,
   extractXmlFromPng,
   extractXmlFromSvg,
+  inferImportFormat,
   resolveImportSource,
 } from "./import-source.js";
 
@@ -101,6 +105,25 @@ describe("extractXmlFromPng", () => {
   });
 });
 
+describe("inferImportFormat", () => {
+  it.each([
+    ["/a/b.drawio", "xml"],
+    ["/a/b.dio", "xml"],
+    ["/a/b.XML", "xml"],
+    ["/a/b.svg", "svg"],
+    ["/a/b.drawio.svg", "svg"],
+    ["/a/b.png", "png"],
+    ["/a/b.drawio.png", "png"],
+  ])("maps %s to %s", (file, expected) => {
+    expect(inferImportFormat(file)).toBe(expected);
+  });
+
+  it("returns undefined for unknown extensions", () => {
+    expect(inferImportFormat("/a/b.txt")).toBeUndefined();
+    expect(inferImportFormat("/a/noext")).toBeUndefined();
+  });
+});
+
 describe("decompressDiagramXml", () => {
   it("expands compressed diagram payloads", () => {
     const xml = `<mxfile><diagram id="p1" name="Page-1">${compress(MODEL_XML)}</diagram></mxfile>`;
@@ -127,22 +150,84 @@ describe("decompressDiagramXml", () => {
 });
 
 describe("resolveImportSource", () => {
-  it("passes inline XML through", () => {
-    expect(
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "import-source-"));
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("passes inline data through", async () => {
+    await expect(
       resolveImportSource({ data: MODEL_XML, format: "xml", filename: "x" }),
-    ).toEqual({ data: MODEL_XML, format: "xml", filename: "x" });
+    ).resolves.toEqual({ data: MODEL_XML, format: "xml", filename: "x" });
   });
 
-  it("expands compressed XML", () => {
-    expect(
+  it("requires exactly one of data or input_path", async () => {
+    await expect(resolveImportSource({ format: "xml" })).rejects.toThrow(
+      "exactly one of",
+    );
+    await expect(
       resolveImportSource({
-        data: `<mxfile><diagram id="p1">${compress(MODEL_XML)}</diagram></mxfile>`,
+        data: MODEL_XML,
+        input_path: "/tmp/x.drawio",
         format: "xml",
-      }).data,
-    ).toBe(`<mxfile><diagram id="p1">${MODEL_XML}</diagram></mxfile>`);
+      }),
+    ).rejects.toThrow("exactly one of");
   });
 
-  it("converts draw.io SVG (raw or base64) and base64 PNG to xml", () => {
+  it("requires format with inline data", async () => {
+    await expect(resolveImportSource({ data: MODEL_XML })).rejects.toThrow(
+      "`format` is required",
+    );
+  });
+
+  it("rejects relative paths", async () => {
+    await expect(
+      resolveImportSource({ input_path: "diagram.drawio" }),
+    ).rejects.toThrow("absolute path");
+  });
+
+  it("reads a .drawio file, infers xml, and decompresses it", async () => {
+    const file = path.join(dir, "compressed.drawio");
+    writeFileSync(
+      file,
+      `<mxfile><diagram id="p1">${compress(MODEL_XML)}</diagram></mxfile>`,
+    );
+    await expect(resolveImportSource({ input_path: file })).resolves.toEqual({
+      data: `<mxfile><diagram id="p1">${MODEL_XML}</diagram></mxfile>`,
+      format: "xml",
+      filename: "compressed.drawio",
+    });
+  });
+
+  it("reads an exported draw.io SVG and passes its diagram on as xml", async () => {
+    const file = path.join(dir, "d.drawio.svg");
+    writeFileSync(file, drawioSvg(MXFILE));
+    await expect(resolveImportSource({ input_path: file })).resolves.toEqual({
+      data: MXFILE,
+      format: "xml",
+      filename: "d.drawio.svg",
+    });
+  });
+
+  it("reads an exported draw.io PNG and passes its diagram on as xml", async () => {
+    const file = path.join(dir, "d.drawio.png");
+    writeFileSync(
+      file,
+      drawioPng([textChunk("mxfile", encodeURIComponent(MXFILE))]),
+    );
+    await expect(resolveImportSource({ input_path: file })).resolves.toEqual({
+      data: MXFILE,
+      format: "xml",
+      filename: "d.drawio.png",
+    });
+  });
+
+  it("normalizes inline SVG (raw or base64) and base64 PNG data", async () => {
     const svg = drawioSvg(MXFILE);
     const png = drawioPng([textChunk("mxfile", encodeURIComponent(MXFILE))]);
     for (const [data, format] of [
@@ -150,7 +235,7 @@ describe("resolveImportSource", () => {
       [Buffer.from(svg).toString("base64"), "svg"],
       [png.toString("base64"), "png"],
     ] as const) {
-      expect(resolveImportSource({ data, format })).toEqual({
+      await expect(resolveImportSource({ data, format })).resolves.toEqual({
         data: MXFILE,
         format: "xml",
         filename: undefined,
@@ -158,15 +243,47 @@ describe("resolveImportSource", () => {
     }
   });
 
-  it("passes input without an embedded diagram through unchanged", () => {
-    expect(
-      resolveImportSource({ data: "<svg><g/></svg>", format: "svg" }),
-    ).toEqual({ data: "<svg><g/></svg>", format: "svg", filename: undefined });
-    const png = drawioPng([textChunk("Software", "x")]).toString("base64");
-    expect(resolveImportSource({ data: png, format: "png" })).toEqual({
-      data: png,
-      format: "png",
-      filename: undefined,
+  it("passes SVG without an embedded diagram through unchanged", async () => {
+    const file = path.join(dir, "plain.svg");
+    writeFileSync(file, "<svg><g/></svg>");
+    await expect(resolveImportSource({ input_path: file })).resolves.toEqual({
+      data: "<svg><g/></svg>",
+      format: "svg",
+      filename: "plain.svg",
     });
+  });
+
+  it("reads PNG without an embedded diagram as base64", async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    const file = path.join(dir, "d.png");
+    writeFileSync(file, bytes);
+    const result = await resolveImportSource({ input_path: file });
+    expect(result.format).toBe("png");
+    expect(Buffer.from(result.data, "base64")).toEqual(bytes);
+  });
+
+  it("lets an explicit format and filename override inference", async () => {
+    const file = path.join(dir, "diagram.txt");
+    writeFileSync(file, MODEL_XML);
+    await expect(
+      resolveImportSource({ input_path: file, format: "xml", filename: "n" }),
+    ).resolves.toEqual({ data: MODEL_XML, format: "xml", filename: "n" });
+  });
+
+  it("errors when the format cannot be inferred", async () => {
+    const file = path.join(dir, "diagram.txt");
+    writeFileSync(file, MODEL_XML);
+    await expect(resolveImportSource({ input_path: file })).rejects.toThrow(
+      "Cannot infer format",
+    );
+  });
+
+  it("reports missing files and directories clearly", async () => {
+    await expect(
+      resolveImportSource({ input_path: path.join(dir, "missing.drawio") }),
+    ).rejects.toThrow("File not found");
+    await expect(
+      resolveImportSource({ input_path: dir, format: "xml" }),
+    ).rejects.toThrow("is a directory");
   });
 });

@@ -351,24 +351,27 @@ Draw.io MCP 服务器提供以下 MCP 工具，用于以编程方式与图表交
 - `dpi`：PNG 导出的 DPI（影响质量，默认：96）
 - `embed_xml`：将图表 XML 数据嵌入 SVG/PNG，以便之后可以在 draw.io 中重新打开（默认：false）
 - `size`：要导出的内容：'selection' 表示仅选中单元格，'page' 表示目标页面，'diagram' 表示整个模型（默认：diagram）
-- `output_path`：保存导出文件的绝对文件路径（必须是绝对路径）
+- `output_path`：保存导出文件的绝对文件路径（必须是绝对路径）。XML 文件，以及使用 `embed_xml=true` 导出的 SVG/PNG 文件，可以通过 `import-diagram` 的 `input_path` 重新加载
 
 *返回*：导出结果，包含 format、mimeType、data（PNG 为 base64，SVG/XML 为文本）、尺寸以及可选的警告信息
 
 ### `import-diagram`
 
-从 XML、内嵌 XML 的 SVG 或内嵌 XML 的 PNG 导入图表到当前 Draw.io 实例中。
+从 XML、内嵌 XML 的 SVG 或内嵌 XML 的 PNG 导入图表到当前 Draw.io 实例中。可以通过 `data` 直接传入内容，也可以通过 `input_path` 让服务器从磁盘读取本地文件。
 
 说明：
+- `data` 和 `input_path` 必须且只能提供其中一个。
+- `input_path` 与 `export-diagram` 的 `output_path` 遵循相同规则：必须是运行服务器的机器上的绝对路径。由 `export-diagram` 写出的文件（XML，或使用 `embed_xml=true` 导出的 SVG/PNG）可以从同一路径原样重新加载。
 - 对于 SVG 和 PNG 输入，服务器会在导入前提取其中嵌入的图表（SVG 的 `content` 属性或 PNG 的 `mxfile` 文本块），因此由 draw.io 或使用 `embed_xml=true` 的 `export-diagram` 导出的文件可以正确加载。
 - 旧版 draw.io 默认保存的压缩 `<diagram>` 内容会在导入前自动解压。
 
 *参数*：
 - `target_page`：在 `replace` 和 `add` 模式下必填；在 `new-page` 模式下可选
 - `data`：图表数据：原始 XML 字符串，或内嵌 XML 的 base64 编码 SVG/PNG
-- `format`：输入格式：xml 表示原始 Draw.io XML，svg 表示内嵌 XML 的 SVG，png 表示内嵌 XML 的 PNG
+- `input_path`：本地图表文件的绝对路径（`.drawio`、`.dio`、`.xml`、`.svg`、`.drawio.svg`、`.png`、`.drawio.png`）
+- `format`：输入格式：xml 表示原始 Draw.io XML，svg 表示内嵌 XML 的 SVG，png 表示内嵌 XML 的 PNG。使用 `data` 时必填；使用 `input_path` 且未指定时，根据文件扩展名推断
 - `mode`：导入模式：replace 清空当前图表并加载新图表，add 将导入的单元格合并到当前图表，new-page 创建一个包含所导入图表的新页面（默认：replace）
-- `filename`：可选的原始文件名，用于提供上下文信息
+- `filename`：可选的原始文件名，用于提供上下文信息；默认为 `input_path` 的文件名
 
 *返回*：导入结果，包含成功状态、消息以及可选的页面/单元格数量
 

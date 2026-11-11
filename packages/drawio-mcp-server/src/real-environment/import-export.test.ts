@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "@jest/globals";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
@@ -366,4 +366,87 @@ describe("real environment/import export", () => {
     },
     180000,
   );
+
+  it("imports a compressed .drawio file from input_path into the live diagram", async () => {
+    await resetDiagram(context);
+    context.browserMessages.length = 0;
+    const logCountBefore = context.logger.entries.length;
+
+    const modelXml =
+      '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="file-1" value="Loaded from file" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="40" y="40" width="140" height="70" as="geometry"/></mxCell></root></mxGraphModel>';
+    const compressed = deflateRawSync(
+      Buffer.from(encodeURIComponent(modelXml), "latin1"),
+    ).toString("base64");
+    const dir = mkdtempSync(join(tmpdir(), "drawio-real-import-"));
+    const filePath = join(dir, "from-disk.drawio");
+    writeFileSync(
+      filePath,
+      `<mxfile><diagram id="disk-page" name="Page-1">${compressed}</diagram></mxfile>`,
+    );
+
+    const { payload: importResult } = await callToolJson<any>(
+      context,
+      "import-diagram",
+      { input_path: filePath, mode: "replace" },
+    );
+    expectToolSuccess(importResult);
+    expect(importResult?.result?.success ?? importResult?.success).toBe(true);
+    expect(JSON.stringify(importResult)).toContain("from-disk.drawio");
+
+    await context.page.waitForFunction(() => {
+      const maybeWindow = window as any;
+      const model = maybeWindow.ui?.editor?.graph?.getModel?.();
+      const cells = Object.values(model?.cells ?? {}) as any[];
+      return cells.some((cell) => cell?.value === "Loaded from file");
+    });
+
+    await expectNoBrowserErrors(context, "import-export");
+    await expectNoServerErrors(context, "import-export", logCountBefore);
+  }, 180000);
+  it.each([
+    ["xml", "roundtrip.drawio", {}],
+    ["svg", "roundtrip.drawio.svg", { embed_xml: true }],
+    ["png", "roundtrip.drawio.png", { embed_xml: true }],
+  ] as const)("round-trips %s: export output_path loads back via input_path", async (format, fileName, extraArgs) => {
+    await resetDiagram(context);
+    context.browserMessages.length = 0;
+    const logCountBefore = context.logger.entries.length;
+
+    const label = `Roundtrip ${format}`;
+    const { payload: rectangle } = await callToolJson<any>(
+      context,
+      "add-rectangle",
+      { x: 60, y: 60, width: 140, height: 70, text: label },
+    );
+    expectToolSuccess(rectangle);
+
+    const dir = mkdtempSync(join(tmpdir(), "drawio-real-roundtrip-"));
+    const filePath = join(dir, fileName);
+    await callToolRaw(context, "export-diagram", {
+      format,
+      output_path: filePath,
+      ...extraArgs,
+    });
+    expect(existsSync(filePath)).toBe(true);
+
+    await resetDiagram(context);
+
+    const { payload: importResult } = await callToolJson<any>(
+      context,
+      "import-diagram",
+      { input_path: filePath, mode: "replace" },
+    );
+    expectToolSuccess(importResult);
+    expect(importResult?.result?.success ?? importResult?.success).toBe(true);
+
+    await context.page.waitForFunction((expected) => {
+      const maybeWindow = window as any;
+      const model = maybeWindow.ui?.editor?.graph?.getModel?.();
+      const cells = Object.values(model?.cells ?? {}) as any[];
+      return cells.some((cell) => cell?.value === expected);
+    }, label);
+
+    await expectNoBrowserErrors(context, "import-export");
+    await expectNoServerErrors(context, "import-export", logCountBefore);
+  }, 180000);
 });

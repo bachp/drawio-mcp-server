@@ -1,8 +1,10 @@
-import { writeFileSync, existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { z } from "zod";
 
 import { export_tool_handler } from "../tool.js";
+import { assertAbsolutePath } from "./file-path.js";
 import { target_page_field } from "./shared.js";
 import { ToolRegistrar } from "./types.js";
 
@@ -79,25 +81,24 @@ export const registerExportDiagramTool: ToolRegistrar = (server, context) => {
         .string()
         .optional()
         .describe(
-          "Absolute file path to save the exported file (must be an absolute path)",
+          "Absolute file path to save the exported file (must be an absolute path). With embed_xml (SVG/PNG) or format xml, the file can be loaded back with import-diagram's input_path",
         ),
     },
     async (args, _extra) => {
+      if (args.output_path) {
+        assertAbsolutePath("output_path", args.output_path);
+        const dir = path.dirname(args.output_path);
+        if (!existsSync(dir)) {
+          throw new Error(`Directory does not exist: ${dir}`);
+        }
+      }
+
       const exportHandler = export_tool_handler(TOOL_export_diagram, context, {
         queue: true,
       });
       const result = await exportHandler(args, _extra);
 
       if (args.output_path) {
-        const path = await import("node:path");
-        if (!path.isAbsolute(args.output_path)) {
-          throw new Error("output_path must be an absolute path");
-        }
-        const dir = path.dirname(args.output_path);
-        if (!existsSync(dir)) {
-          throw new Error(`Directory does not exist: ${dir}`);
-        }
-
         const exportContent = result.content;
         if (args.format === "png") {
           const imageContent = exportContent.find(

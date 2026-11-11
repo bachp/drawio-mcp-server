@@ -1,10 +1,15 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { inflateRawSync, inflateSync } from "node:zlib";
+
+import { assertAbsolutePath } from "./file-path.js";
 
 export type ImportFormat = "xml" | "svg" | "png";
 
 export interface ImportSourceInput {
-  data: string;
-  format: ImportFormat;
+  data?: string;
+  input_path?: string;
+  format?: ImportFormat;
   filename?: string;
 }
 
@@ -12,6 +17,26 @@ export interface ResolvedImportSource {
   data: string;
   format: ImportFormat;
   filename?: string;
+}
+
+/**
+ * Infers the import format from a file name. Handles draw.io's double
+ * extensions (`.drawio.svg`, `.drawio.png`) by looking at the last suffix.
+ */
+export function inferImportFormat(filePath: string): ImportFormat | undefined {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".png":
+      return "png";
+    case ".svg":
+      return "svg";
+    case ".drawio":
+    case ".dio":
+    case ".xml":
+      return "xml";
+    default:
+      return undefined;
+  }
 }
 
 /** Decodes draw.io's compressed form: base64 → raw deflate → URI encoding. */
@@ -180,39 +205,90 @@ export function extractXmlFromPng(png: Buffer): string | null {
  */
 function normalize(
   format: ImportFormat,
-  data: string,
+  text: string | null,
+  bytes: Buffer | null,
 ): { data: string; format: ImportFormat } {
   if (format === "xml") {
-    return { data: decompressDiagramXml(data), format };
+    const xml = text ?? (bytes as Buffer).toString("utf-8");
+    return { data: decompressDiagramXml(xml), format };
   }
 
   if (format === "svg") {
-    const svg = data.trimStart().startsWith("<")
-      ? data
-      : Buffer.from(data, "base64").toString("utf-8");
+    let svg = text ?? (bytes as Buffer).toString("utf-8");
+    if (!svg.trimStart().startsWith("<")) {
+      svg = Buffer.from(svg, "base64").toString("utf-8");
+    }
     const xml = extractXmlFromSvg(svg);
-    return xml
-      ? { data: decompressDiagramXml(xml), format: "xml" }
-      : { data, format };
+    if (xml) {
+      return { data: decompressDiagramXml(xml), format: "xml" };
+    }
+    return { data: text ?? svg, format };
   }
 
-  const xml = extractXmlFromPng(Buffer.from(data, "base64"));
-  return xml
-    ? { data: decompressDiagramXml(xml), format: "xml" }
-    : { data, format };
+  const png = bytes ?? Buffer.from(text as string, "base64");
+  const xml = extractXmlFromPng(png);
+  if (xml) {
+    return { data: decompressDiagramXml(xml), format: "xml" };
+  }
+  return { data: text ?? png.toString("base64"), format };
 }
 
 /**
  * Turns the `import-diagram` tool arguments into the `data`/`format` pair the
- * browser plugin expects. SVG and PNG input written by draw.io (embedded
- * diagram in the SVG `content` attribute or the PNG `mxfile` text chunk) is
- * converted to XML, and compressed `<diagram>` pages are expanded.
+ * browser plugin expects. Exactly one of `data` or `input_path` must be set.
+ * `input_path` follows the same rule as `export-diagram`'s `output_path`
+ * (absolute path), so a file written by export loads back unchanged.
+ * `format` is inferred from the extension when omitted, and `filename`
+ * defaults to the file's base name.
  */
-export function resolveImportSource(
+export async function resolveImportSource(
   input: ImportSourceInput,
-): ResolvedImportSource {
+): Promise<ResolvedImportSource> {
+  const hasData = input.data !== undefined;
+  const hasPath = input.input_path !== undefined;
+
+  if (hasData === hasPath) {
+    throw new Error(
+      "import-diagram requires exactly one of `data` or `input_path`",
+    );
+  }
+
+  if (hasData) {
+    if (!input.format) {
+      throw new Error("`format` is required when importing from `data`");
+    }
+    return {
+      ...normalize(input.format, input.data as string, null),
+      filename: input.filename,
+    };
+  }
+
+  const inputPath = input.input_path as string;
+  assertAbsolutePath("input_path", inputPath);
+
+  const format = input.format ?? inferImportFormat(inputPath);
+  if (!format) {
+    throw new Error(
+      `Cannot infer format from file extension of ${inputPath}; pass \`format\` explicitly`,
+    );
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(inputPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(`File not found: ${inputPath}`);
+    }
+    if (code === "EISDIR") {
+      throw new Error(`input_path is a directory: ${inputPath}`);
+    }
+    throw new Error(`Could not read ${inputPath}: ${(error as Error).message}`);
+  }
+
   return {
-    ...normalize(input.format, input.data),
-    filename: input.filename,
+    ...normalize(format, null, bytes),
+    filename: input.filename ?? path.basename(inputPath),
   };
 }

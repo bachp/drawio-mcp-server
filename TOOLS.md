@@ -349,24 +349,27 @@ Notes:
 - `dpi`: DPI for PNG export (affects quality, default: 96)
 - `embed_xml`: Embed the diagram XML data in SVG/PNG so it can be reopened in draw.io (default: false)
 - `size`: What to export: 'selection' for selected cells only, 'page' for the target page, 'diagram' for the entire model (default: diagram)
-- `output_path`: Absolute file path to save the exported file (must be an absolute path)
+- `output_path`: Absolute file path to save the exported file (must be an absolute path). XML files, and SVG/PNG files exported with `embed_xml=true`, can be loaded back with `import-diagram`'s `input_path`
 
 *Returns*: Export result with format, mimeType, data (base64 for PNG, text for SVG/XML), dimensions, and optional warning
 
 ### `import-diagram`
 
-Import a diagram from XML, SVG with embedded XML, or PNG with embedded XML into the current Draw.io instance.
+Import a diagram from XML, SVG with embedded XML, or PNG with embedded XML into the current Draw.io instance. Pass the content inline with `data`, or pass `input_path` so the server reads a local file from disk.
 
 Notes:
+- Use exactly one of `data` or `input_path`.
+- `input_path` follows the same rule as `export-diagram`'s `output_path`: it must be an absolute path on the machine running the server. A file written by `export-diagram` (XML, or SVG/PNG with `embed_xml=true`) loads back unchanged from the same path.
 - For SVG and PNG input, the server extracts the embedded diagram (the SVG `content` attribute or the PNG `mxfile` text chunk) before import, so files exported by draw.io or by `export-diagram` with `embed_xml=true` load correctly.
 - Compressed `<diagram>` content, which older draw.io versions save by default, is expanded before import.
 
 *Parameters*:
 - `target_page`: Required for `replace` and `add`; optional for `new-page`
 - `data`: The diagram data: raw XML string, or base64-encoded SVG/PNG with embedded XML
-- `format`: Input format: xml for raw Draw.io XML, svg for SVG with embedded XML, png for PNG with embedded XML
+- `input_path`: Absolute path to a local diagram file (`.drawio`, `.dio`, `.xml`, `.svg`, `.drawio.svg`, `.png`, `.drawio.png`)
+- `format`: Input format: xml for raw Draw.io XML, svg for SVG with embedded XML, png for PNG with embedded XML. Required with `data`; inferred from the file extension with `input_path` when omitted
 - `mode`: Import mode: replace clears current diagram and loads new one, add merges imported cells into current diagram, new-page creates a new page with imported diagram (default: replace)
-- `filename`: Optional original filename for context
+- `filename`: Optional original filename for context; defaults to the base name of `input_path`
 
 *Returns*: Import result with success status, message, and optional page/cell counts
 
