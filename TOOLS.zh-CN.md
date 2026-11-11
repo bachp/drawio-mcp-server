@@ -359,6 +359,10 @@ Draw.io MCP 服务器提供以下 MCP 工具，用于以编程方式与图表交
 
 从 XML、内嵌 XML 的 SVG 或内嵌 XML 的 PNG 导入图表到当前 Draw.io 实例中。
 
+说明：
+- 对于 SVG 和 PNG 输入，服务器会在导入前提取其中嵌入的图表（SVG 的 `content` 属性或 PNG 的 `mxfile` 文本块），因此由 draw.io 或使用 `embed_xml=true` 的 `export-diagram` 导出的文件可以正确加载。
+- 旧版 draw.io 默认保存的压缩 `<diagram>` 内容会在导入前自动解压。
+
 *参数*：
 - `target_page`：在 `replace` 和 `add` 模式下必填；在 `new-page` 模式下可选
 - `data`：图表数据：原始 XML 字符串，或内嵌 XML 的 base64 编码 SVG/PNG

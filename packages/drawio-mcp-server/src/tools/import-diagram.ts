@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { default_tool } from "../tool.js";
+import { resolveImportSource } from "./import-source.js";
 import { target_page_field } from "./shared.js";
 import { ToolRegistrar } from "./types.js";
 
@@ -41,10 +42,12 @@ export const registerImportDiagramTool: ToolRegistrar = (server, context) => {
         );
       }
 
+      const source = resolveImportSource(args);
+
       const handler = default_tool(TOOL_import_diagram, context, {
         queue: true,
       });
-      return handler(args, extra);
+      return handler({ ...args, ...source }, extra);
     },
   );
 };

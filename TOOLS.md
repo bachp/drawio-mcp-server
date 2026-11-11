@@ -357,6 +357,10 @@ Notes:
 
 Import a diagram from XML, SVG with embedded XML, or PNG with embedded XML into the current Draw.io instance.
 
+Notes:
+- For SVG and PNG input, the server extracts the embedded diagram (the SVG `content` attribute or the PNG `mxfile` text chunk) before import, so files exported by draw.io or by `export-diagram` with `embed_xml=true` load correctly.
+- Compressed `<diagram>` content, which older draw.io versions save by default, is expanded before import.
+
 *Parameters*:
 - `target_page`: Required for `replace` and `add`; optional for `new-page`
 - `data`: The diagram data: raw XML string, or base64-encoded SVG/PNG with embedded XML

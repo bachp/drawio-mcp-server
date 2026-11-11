@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "@jest/globals";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateRawSync } from "node:zlib";
 
 import {
   createRealEnvironmentContext,
@@ -275,4 +276,94 @@ describe("real environment/import export", () => {
     await expectNoBrowserErrors(context, "import-export");
     await expectNoServerErrors(context, "import-export", logCountBefore);
   }, 180000);
+  it("imports compressed draw.io XML passed inline", async () => {
+    await resetDiagram(context);
+    context.browserMessages.length = 0;
+    const logCountBefore = context.logger.entries.length;
+
+    const modelXml =
+      '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="c-1" value="Compressed cell" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="40" y="40" width="140" height="70" as="geometry"/></mxCell></root></mxGraphModel>';
+    const compressed = deflateRawSync(
+      Buffer.from(encodeURIComponent(modelXml), "latin1"),
+    ).toString("base64");
+
+    const { payload: importResult } = await callToolJson<any>(
+      context,
+      "import-diagram",
+      {
+        data: `<mxfile><diagram id="c-page" name="Page-1">${compressed}</diagram></mxfile>`,
+        format: "xml",
+        mode: "replace",
+      },
+    );
+    expectToolSuccess(importResult);
+    expect(importResult?.result?.success ?? importResult?.success).toBe(true);
+
+    await context.page.waitForFunction(() => {
+      const maybeWindow = window as any;
+      const model = maybeWindow.ui?.editor?.graph?.getModel?.();
+      const cells = Object.values(model?.cells ?? {}) as any[];
+      return cells.some((cell) => cell?.value === "Compressed cell");
+    });
+
+    await expectNoBrowserErrors(context, "import-export");
+    await expectNoServerErrors(context, "import-export", logCountBefore);
+  }, 180000);
+
+  it.each(["svg", "png"] as const)(
+    "round-trips %s exported with embed_xml back through import-diagram",
+    async (format) => {
+      await resetDiagram(context);
+      context.browserMessages.length = 0;
+      const logCountBefore = context.logger.entries.length;
+
+      const label = `Roundtrip ${format}`;
+      const { payload: rectangle } = await callToolJson<any>(
+        context,
+        "add-rectangle",
+        { x: 60, y: 60, width: 140, height: 70, text: label },
+      );
+      expectToolSuccess(rectangle);
+
+      const exported = await callToolRaw(context, "export-diagram", {
+        format,
+        embed_xml: true,
+      });
+      const content = exported.content as Array<{
+        type: string;
+        text?: string;
+        data?: string;
+      }>;
+      const data =
+        format === "png"
+          ? content.find((item) => item.type === "image")?.data
+          : content.find(
+              (item) => item.type === "text" && item.text?.includes("<svg"),
+            )?.text;
+      expect(data).toBeTruthy();
+
+      await resetDiagram(context);
+
+      const { payload: importResult } = await callToolJson<any>(
+        context,
+        "import-diagram",
+        { data, format, mode: "replace" },
+      );
+      expectToolSuccess(importResult);
+      expect(importResult?.result?.success ?? importResult?.success).toBe(
+        true,
+      );
+
+      await context.page.waitForFunction((expected) => {
+        const maybeWindow = window as any;
+        const model = maybeWindow.ui?.editor?.graph?.getModel?.();
+        const cells = Object.values(model?.cells ?? {}) as any[];
+        return cells.some((cell) => cell?.value === expected);
+      }, label);
+
+      await expectNoBrowserErrors(context, "import-export");
+      await expectNoServerErrors(context, "import-export", logCountBefore);
+    },
+    180000,
+  );
 });
