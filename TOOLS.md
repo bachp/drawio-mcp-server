@@ -49,7 +49,28 @@ Notes:
 
 Lists all currently connected Draw.io document instances.
 
-*Returns*: Array of document objects with `id`, `title`, `mode`, `hash`, `file_url`, `page_count`, and `current_page`
+*Returns*: Array of document objects with `id`, `title`, `mode`, `hash`, `file_url`, `page_count`, and `current_page`. File-backed documents (see `load-document`) also have `file_session` and `file_path`.
+
+### `load-document`
+
+Opens a local `.drawio`, `.dio`, or `.xml` file as a **file-backed document**: the document *is* the file. Requires the built-in editor (`--editor`).
+
+The server serves the editor at `/file/<session>` in draw.io embed mode and loads the file into it, with all pages. Every other tool works on the document as usual. `save-document` (or **Save** in the editor) writes the file.
+
+Notes:
+- The path follows the same rule as `export-diagram`'s `output_path`: it must be an absolute path on the machine running the server.
+- A missing file starts as an empty diagram. The server creates the file on the first save.
+- If the file is already open, the call returns the existing document instead of opening a second tab.
+- Before each write, the server checks that the file was not changed on disk since it was loaded or last saved. If it was, the save fails (see `save-document`'s `overwrite`).
+- SVG and PNG files are not supported. Use `import-diagram` for those.
+
+*Parameters*:
+- `path`: Absolute path to the diagram file
+- `autosave`: Write every change to the file automatically instead of only on save (default: false)
+- `open_browser`: Open the editor in the default browser (default: true). When false, open the returned `url` yourself
+- `wait_ms`: How long to wait for the editor tab to connect before returning (default: 30000)
+
+*Returns*: `document_id` (null if the tab has not connected yet), `file_path`, `url`, `url_path`, `autosave`, and `already_open`
 
 ### `set-document-title`
 
@@ -64,9 +85,14 @@ Renames the selected Draw.io document through its active storage provider. When 
 
 Triggers Draw.io's existing **File → Save** action for the selected document, preserving the editor's current storage mode.
 
-The call confirms that the save flow was triggered. Authentication, conflict, permission, or **Save As** prompts may still require user interaction in the Draw.io tab.
+For a **file-backed document** (opened with `load-document`), the save writes the local file, and the call returns once the file is written. If the file was changed on disk since it was loaded or last saved, the save fails, unless `overwrite` is true.
 
-*Returns*: Trigger status plus the current document title and storage mode
+For other documents, the call confirms that the save flow was triggered. Authentication, conflict, permission, or **Save As** prompts may still require user interaction in the Draw.io tab.
+
+*Parameters*:
+- `overwrite`: File-backed documents only: write even if the file was changed on disk (default: false)
+
+*Returns*: For file-backed documents, `saved`, `file_path`, and `bytes`. For other documents, the trigger status plus the current document title and storage mode
 
 ## Diagram Inspection Tools
 

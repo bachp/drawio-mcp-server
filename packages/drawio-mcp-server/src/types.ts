@@ -1,3 +1,5 @@
+import type { FileSessions } from "./file-sessions.js";
+
 export const bus_request_stream = "BUS_REQUEST";
 export const bus_reply_stream = "BUS_REPLY";
 
@@ -20,6 +22,10 @@ export type ConnectedDocumentInfo = {
   file_url: string | null;
   page_count: number;
   current_page: CurrentDocumentPageInfo | null;
+  /** Present only for file-backed documents (see load-document). */
+  file_session?: string;
+  /** Local file the document is loaded from and saved to. */
+  file_path?: string;
 };
 
 export type ResolvedDocumentTarget = {
@@ -58,6 +64,8 @@ export type DocumentRouting = {
 };
 
 export type Context = {
+  /** File-backed document sessions; absent when the editor is not served. */
+  files?: FileSessions;
   bus: Bus;
   id_generator: IdGenerator;
   request_queue: RequestQueue;

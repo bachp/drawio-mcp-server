@@ -63,7 +63,7 @@ describe("MCP Apps: show-diagram tool", () => {
     await client.close();
   });
 
-  it("injects target_document into every tool except list-documents", async () => {
+  it("injects target_document into every tool except list-documents and load-document", async () => {
     app = createDrawioMcpApp({
       config: defaultConfig(),
       log: new MemoryLogger(),
@@ -75,12 +75,29 @@ describe("MCP Apps: show-diagram tool", () => {
       const schema = tool.inputSchema as {
         properties?: Record<string, unknown>;
       };
-      if (tool.name === "list-documents") {
+      if (tool.name === "list-documents" || tool.name === "load-document") {
         expect(schema?.properties?.target_document).toBeUndefined();
         continue;
       }
       expect(schema?.properties?.target_document).toBeDefined();
     }
+
+    await client.close();
+  });
+
+  it("load-document explains that it needs the built-in editor", async () => {
+    app = createDrawioMcpApp({
+      config: defaultConfig(),
+      log: new MemoryLogger(),
+    });
+    const client = await connectClientForApp(app);
+    const result = (await client.callTool({
+      name: "load-document",
+      arguments: { path: "/tmp/diagram.drawio", open_browser: false },
+    })) as { isError?: boolean; content: Array<{ text?: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("--editor");
 
     await client.close();
   });

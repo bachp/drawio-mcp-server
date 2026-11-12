@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
+import { Hono, type Context as HonoContext } from "hono";
 import { cors } from "hono/cors";
 
 import EventEmitter from "node:events";
@@ -59,6 +59,12 @@ import {
 } from "./assets/index.js";
 import { registerAppShellResource } from "./app-resource.js";
 import { registerTools } from "./tools/index.js";
+import {
+  create_file_sessions,
+  FileConflictError,
+  type FileSessions,
+} from "./file-sessions.js";
+import { render_file_shell } from "./file-shell.js";
 import { createServerWithSchemaStripping } from "./register-tool.js";
 import { target_document_field } from "./tools/shared.js";
 import { resolveTlsMaterial, type ResolvedTlsMaterial } from "./tls/index.js";
@@ -103,6 +109,12 @@ export type DrawioMcpApp = {
 /**
  * Display help message and exit
  */
+/**
+ * Tools that do not act on an existing connected document, so they do not
+ * get the `target_document` selector added.
+ */
+const DOCUMENT_UNSCOPED_TOOLS = new Set(["list-documents", "load-document"]);
+
 function showHelp(): never {
   fatalLog.log(
     "info",
@@ -202,6 +214,75 @@ function registerConfigRoute(
         ? { serverUrl, websocketUrl: config.webSocketUrl }
         : { serverUrl, websocketPort: config.extensionPort },
     );
+  });
+}
+
+/**
+ * A browser request must come from the page this server served (the
+ * `/file/<id>` host page). Requests without an Origin header are not from a
+ * browser page and are allowed; the random session id still has to match.
+ */
+function isSameOriginRequest(c: HonoContext): boolean {
+  const origin = c.req.header("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === c.req.header("host");
+  } catch {
+    return false;
+  }
+}
+
+function registerFileRoutes(app: Hono, files: FileSessions, log: AppLogger) {
+  app.get("/file/:id", (c) => {
+    const session = files.get(c.req.param("id"));
+    if (!session) {
+      return c.text("Unknown file session; call load-document again", 404);
+    }
+    return c.html(render_file_shell(session.id, session.title));
+  });
+
+  app.get("/api/files/:id", async (c) => {
+    if (!isSameOriginRequest(c)) return c.json({ error: "Forbidden" }, 403);
+    const id = c.req.param("id");
+    if (!files.get(id)) return c.json({ error: "Unknown file session" }, 404);
+    const { session, xml } = await files.read(id);
+    return c.json({
+      path: session.path,
+      title: session.title,
+      autosave: session.autosave,
+      xml,
+    });
+  });
+
+  app.post("/api/files/:id", async (c) => {
+    if (!isSameOriginRequest(c)) return c.json({ error: "Forbidden" }, 403);
+    const id = c.req.param("id");
+    if (!files.get(id)) return c.json({ error: "Unknown file session" }, 404);
+
+    let body: { xml?: unknown; overwrite?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Expected a JSON body" }, 400);
+    }
+    if (typeof body.xml !== "string" || body.xml.length === 0) {
+      return c.json({ error: "`xml` must be a non-empty string" }, 400);
+    }
+
+    try {
+      const { session, bytes } = await files.write(id, body.xml, {
+        overwrite: body.overwrite === true,
+      });
+      log.debug(`[files] saved ${bytes} bytes to ${session.path}`);
+      return c.json({ path: session.path, bytes });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.log("warn", `[files] save failed: ${message}`);
+      return c.json(
+        { error: message },
+        error instanceof FileConflictError ? 409 : 500,
+      );
+    }
   });
 }
 
@@ -323,6 +404,7 @@ function createHttpApp(
   createServer: () => McpServer,
   disposeMcpServer: (server: McpServer) => void,
   tlsMaterial: ResolvedTlsMaterial | null,
+  files: FileSessions,
 ): { app: Hono } {
   const app = new Hono();
   setupCors(app);
@@ -331,7 +413,10 @@ function createHttpApp(
   if (features.enableHealth) registerHealthRoute(app);
   if (features.enableConfig) registerConfigRoute(app, config, scheme);
   if (features.enableMcp) registerMcpRoute(app, createServer, disposeMcpServer);
-  if (features.enableEditor) registerEditorRoutes(app, config, log);
+  if (features.enableEditor) {
+    registerFileRoutes(app, files, log);
+    registerEditorRoutes(app, config, log);
+  }
 
   return { app };
 }
@@ -344,6 +429,7 @@ async function startHttpServer(
   config: ServerConfig,
   features: HttpFeatureConfig,
   tlsMaterial: ResolvedTlsMaterial | null,
+  files: FileSessions,
 ): Promise<{
   server: ReturnType<typeof serve>;
   port: number;
@@ -355,6 +441,7 @@ async function startHttpServer(
     createServer,
     disposeMcpServer,
     tlsMaterial,
+    files,
   );
 
   const httpServer = serve({
@@ -401,6 +488,7 @@ async function startHttpServer(
     log.debug(`MCP endpoint: ${scheme}://localhost:${listeningPort}/mcp`);
   }
   if (features.enableEditor) {
+    files.set_editor_origin(`${scheme}://localhost:${listeningPort}`);
     log.debug(`Editor: ${scheme}://localhost:${listeningPort}/`);
   }
 
@@ -470,6 +558,7 @@ export function createDrawioMcpApp(options?: {
   const bus = create_bus(lazyLog)(emitter);
   const id_generator = nanoid_id_generator();
   const request_queue = create_request_queue(lazyLog);
+  const files = create_file_sessions();
 
   function normalizeOptionalString(value: unknown): string | null {
     if (value === undefined || value === null || value === "") {
@@ -519,7 +608,7 @@ export function createDrawioMcpApp(options?: {
 
     const page_count = Number(record.page_count);
 
-    return {
+    const document: ConnectedDocumentInfo = {
       id,
       title: normalizeOptionalString(record.title),
       mode: normalizeOptionalString(record.mode),
@@ -529,6 +618,17 @@ export function createDrawioMcpApp(options?: {
         Number.isInteger(page_count) && page_count >= 0 ? page_count : 0,
       current_page: normalizeCurrentPage(record.current_page),
     };
+
+    // File-backed tabs report the server session they were opened for.
+    // Only sessions this server created are honored.
+    const fileSessionId = normalizeOptionalString(record.file_session);
+    const fileSession = fileSessionId ? files.get(fileSessionId) : undefined;
+    if (fileSession) {
+      document.file_session = fileSession.id;
+      document.file_path = fileSession.path;
+    }
+
+    return document;
   }
 
   function listKnownDocuments(): ConnectedDocumentInfo[] {
@@ -686,6 +786,7 @@ export function createDrawioMcpApp(options?: {
   };
 
   const context: Context = {
+    files,
     bus,
     id_generator,
     request_queue,
@@ -710,9 +811,8 @@ export function createDrawioMcpApp(options?: {
             params: Record<string, unknown>,
             handler: unknown,
           ) => {
-            const scopedParams =
-              name === "list-documents"
-                ? params
+            const scopedParams = DOCUMENT_UNSCOPED_TOOLS.has(name)
+              ? params
                 : {
                     ...params,
                     target_document: target_document_field().optional(),
@@ -740,9 +840,8 @@ export function createDrawioMcpApp(options?: {
                 | { shape?: Record<string, unknown> }
                 | undefined
             )?.shape ?? {};
-          const scopedConfig =
-            name === "list-documents"
-              ? config
+          const scopedConfig = DOCUMENT_UNSCOPED_TOOLS.has(name)
+            ? config
               : {
                   ...config,
                   inputSchema: z.object({
@@ -980,6 +1079,9 @@ export function createDrawioMcpApp(options?: {
             const document = normalizeDocumentState(json.document);
             if (document) {
               entry.documents.set(document.id, document);
+              if (document.file_session) {
+                files.notify_document(document.file_session, document.id);
+              }
             }
             entry.updated_at = Date.now();
             flushSyncWaiters(entry);
@@ -1160,6 +1262,7 @@ export function createDrawioMcpApp(options?: {
         config,
         features,
         tlsMaterial,
+        files,
       );
       httpServer = started.server;
       return started;

@@ -32,9 +32,27 @@ export type DocumentInfo = {
   mode: string | null;
   hash: string | null;
   file_url: string | null;
+  /** Server file session when the tab is a file-backed document. */
+  file_session: string | null;
   page_count: number;
   current_page: PageInfo | null;
 };
+
+/**
+ * File-backed documents are served by drawio-mcp-server at
+ * `/index.html?...&mcp_file=<session id>` (inside its `/file/<id>` host
+ * page). Reporting the id lets the server map this tab to its file.
+ */
+function read_file_session(): string | null {
+  try {
+    const search =
+      typeof window !== "undefined" ? window.location?.search : undefined;
+    if (!search) return null;
+    return new URLSearchParams(search).get("mcp_file") || null;
+  } catch {
+    return null;
+  }
+}
 
 export type PageExecutionMode =
   | "visible-page"
@@ -555,6 +573,7 @@ export function serialize_document_info(
     mode: normalize_optional_string(file?.getMode?.()),
     hash: normalize_optional_string(file?.getHash?.()),
     file_url: normalize_optional_string(file?.getFileUrl?.()),
+    file_session: read_file_session(),
     page_count: pages.length,
     current_page:
       currentIndex >= 0 && ui?.currentPage

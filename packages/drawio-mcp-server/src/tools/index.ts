@@ -21,6 +21,7 @@ import { registerListLayersTool } from "./list-layers.js";
 import { registerListDocumentsTool } from "./list-documents.js";
 import { registerListPagesTool } from "./list-pages.js";
 import { registerListPagedModelTool } from "./list-paged-model.js";
+import { registerLoadDocumentTool } from "./load-document.js";
 import { registerMoveCellToLayerTool } from "./move-cell-to-layer.js";
 import { registerRenamePageTool } from "./rename-page.js";
 import { registerSaveDocumentTool } from "./save-document.js";
@@ -55,6 +56,7 @@ const registrars: ToolRegistrar[] = [
   registerImportDiagramTool,
   registerImportMermaidTool,
   registerListDocumentsTool,
+  registerLoadDocumentTool,
   registerListPagesTool,
   registerGetCurrentPageTool,
   registerCreatePageTool,
